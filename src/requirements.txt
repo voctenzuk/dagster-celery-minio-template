@@ -1,0 +1,10 @@
+celery
+sqlalchemy
+psycopg2-binary
+dagster
+dagster-celery
+dagster-postgres
+dagster-aws
+dagster-cron
+dagit
+boto3

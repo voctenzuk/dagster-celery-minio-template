@@ -1,0 +1,124 @@
+version: "3.7"
+
+services:
+  postgres:
+    image: postgres:15.0-bullseye
+    environment:
+      POSTGRES_USER: $DAGSTER_POSTGRES_USER
+      POSTGRES_PASSWORD: $DAGSTER_POSTGRES_PASSWORD
+      POSTGRES_DB: $DAGSTER_POSTGRES_DB
+    env_file:
+      - .env
+    volumes:
+      - postgres:/var/lib/postgresql/dagster
+    networks:
+      - dagster_network
+
+  rabbit:
+    image: rabbitmq:3.11-management-alpine
+    ports:
+      - 15672:15672
+    environment:
+      RABBITMQ_DEFAULT_USER: rabbit
+      RABBITMQ_DEFAULT_PASS: $RABBITMQ_DEFAULT_PASS
+      RABBITMQ_DEFAULT_VHOST: dagster
+    env_file:
+      - .env
+    volumes:
+      - rabbit:/var/lib/rabbitmq
+    networks:
+      - dagster_network
+      
+  minio:
+    image: minio/minio:RELEASE.2022-11-11T03-44-20Z
+    ports:
+      - 9000:9000
+      - 9090:9090
+    volumes:
+      - minio:/data
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: $MINIO_ROOT_PASSWORD
+    env_file:
+      - .env
+    command: 'server /data --console-address ":9090"'
+    networks:
+      - dagster_network
+
+  flower: 
+    image: mher/flower:1.2.0
+    ports:
+      - 5555:5555
+    environment:
+      - CELERY_BROKER_URL=$CELERY_BROKER_URL
+      - FLOWER_PORT=5555
+    env_file:
+      - .env
+    networks:
+      - dagster_network
+    depends_on:
+      - rabbit
+
+  styletyx:
+    build:
+      context: .
+    image: dagster_styletyx
+    entrypoint: ["dagster-celery", "worker", "start", "--loglevel=info", "-A", "dagster_celery.app", "-y", "dagster_celery.yaml"]
+    restart: always
+    ports:
+      - 4000:4000
+    environment:
+      DAGSTER_CURRENT_IMAGE: "dagster_styletyx"
+    env_file:
+      - .env
+    networks:
+      - dagster_network
+    depends_on:
+      - postgres
+      - rabbit
+
+  # This service runs dagit, which loads your user code from the user code container.
+  # Since our instance uses the QueuedRunCoordinator, any runs submitted from dagit will be put on
+  # a queue and later dequeued and launched by dagster-daemon.
+  dagit:
+    build:
+      context: .
+    entrypoint: ["dagit", "-h", "0.0.0.0", "-p", "3000", "-w", "workspace.yaml"]
+    env_file:
+      - .env
+    expose:
+      - "3000"
+    ports:
+      - "3000:3000"
+    networks:
+      - dagster_network
+    depends_on:
+      - postgres
+      - rabbit
+      - styletyx
+
+  # This service runs the dagster-daemon process, which is responsible for taking runs
+  # off of the queue and launching them, as well as creating runs from schedules or sensors.
+  daemon:
+    build:
+      context: .
+    entrypoint: ["dagster-daemon", "run"]
+    env_file:
+      - .env
+    restart: on-failure
+    networks:
+      - dagster_network
+    depends_on:
+      - postgres
+      - rabbit
+      - styletyx
+
+volumes:
+  postgres:
+  rabbit:
+  minio:
+
+networks:
+  dagster_network:
+    driver: bridge
+    name: dagster_network
